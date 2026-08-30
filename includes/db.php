@@ -9,7 +9,7 @@ function getDB() {
         try {
             $pdo->query('SELECT 1');
             return $pdo;
-        } catch (PDOException $e) {
+        } catch (Throwable $e) {
             error_log('[VoteSystem] DB reconnect triggered: ' . $e->getMessage());
             $pdo = null;
         }
@@ -24,9 +24,9 @@ function getDB() {
                 PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
                 PDO::ATTR_EMULATE_PREPARES   => false,
                 PDO::ATTR_PERSISTENT         => false,
-                PDO::MYSQL_ATTR_INIT_COMMAND => "SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci, time_zone = '+00:00'",
             )
         );
+        $pdo->exec("SET time_zone = '+00:00'");
     } catch (PDOException $e) {
         error_log('[VoteSystem] DB connection failed: ' . $e->getMessage());
         http_response_code(503);
@@ -42,8 +42,7 @@ function getDB() {
             exit;
         }
 
-        // Requisição de navegador → HTML temático
-        $errMsg = htmlspecialchars($e->getMessage(), ENT_QUOTES, 'UTF-8');
+        // Requisição de navegador → HTML temático (sem expor detalhes do erro)
         echo '<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8">'
            . '<meta name="viewport" content="width=device-width,initial-scale=1.0">'
            . '<title>Indisponível — VoteSystem</title>'
@@ -55,8 +54,6 @@ function getDB() {
            . '<p style="color:var(--text-secondary);font-size:.85rem;line-height:1.7;margin-bottom:1.5rem">'
            . 'Não foi possível conectar ao banco de dados do servidor. '
            . 'Verifique se o MySQL está rodando e se as credenciais em <code>config.php</code> estão corretas.</p>'
-           . '<div class="alert alert-error" style="font-size:.78rem;text-align:left;word-break:break-all">'
-           . htmlspecialchars($errMsg, ENT_QUOTES, 'UTF-8') . '</div>'
            . '<a href="javascript:location.reload()" class="btn btn-primary" style="margin-top:1rem">&#8635; Tentar novamente</a>'
            . '</div></body></html>';
         exit;

@@ -37,9 +37,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         if (empty($name) || empty($top_id) || empty($top_btn)) {
             $error = 'Nome, ID do Servidor e Top são obrigatórios.';
+        } elseif (!isset($url_templates[$top_btn])) {
+            $error = 'Top selecionado inválido.';
+        } elseif (!preg_match('/^[a-zA-Z0-9._\-]+$/', $top_id)) {
+            $error = 'ID do Servidor contém caracteres inválidos.';
         } elseif ($top_btn !== '4top.php' && !has4Top()) {
             $error = '⚠ O 4TOP precisa ser adicionado primeiro antes de qualquer outro top.';
         } else {
+            $dup = $db->prepare("SELECT id FROM 4top_tops WHERE top_btn = ? LIMIT 1");
+            $dup->execute(array($top_btn));
+            if ($dup->fetch()) {
+                $error = 'Este top já foi adicionado.';
+            } else {
             $url = isset($url_templates[$top_btn])
                 ? str_replace('{SERVER_ID}', rawurlencode($top_id), $url_templates[$top_btn])
                 : '';
@@ -57,7 +66,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                  VALUES (?, ?, ?, ?, NULL, ?, 1, ?)"
             );
             $stmt->execute(array($name, $top_id, $token ?: null, $url ?: null, $top_btn, $sort_order));
-            $success = 'Top "' . htmlspecialchars($name) . '" adicionado com sucesso!';
+            $success = 'Top "' . $name . '" adicionado com sucesso!';
+            }
         }
     }
 
@@ -106,9 +116,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         );
         for ($i = 0; $i < count($item_ids); $i++) {
             $iid = (int)($item_ids[$i] ?? 0);
-            $qty = max(1, (int)($quantities[$i] ?? 1));
+            $qty = min(100000, max(1, (int)($quantities[$i] ?? 1)));
             $dsc = trim($descs[$i] ?? '');
-            if ($iid > 0) {
+            if ($iid > 0 && $iid <= 1000000) {
                 $stmt->execute(array($iid, $qty, $dsc ?: null));
                 $added++;
             }

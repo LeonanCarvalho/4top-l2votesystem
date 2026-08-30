@@ -61,8 +61,12 @@ if (!$stmt->fetch()) {
     exit;
 }
 
-// Checa cooldown
-if (hasVotedRecently($login, $topId)) {
+// Registra o clique — registerVote já faz check transacional
+$ip       = clientIp();
+$ipSource = clientIpSource();
+$result   = registerVote($login, $topId, $ip);
+
+if ($result === 'cooldown') {
     $last = getLastVote($login, $topId);
     $remaining = $last ? max(0, 43200 - (int)$last['seconds_ago']) : 0;
     echo json_encode(array(
@@ -73,10 +77,5 @@ if (hasVotedRecently($login, $topId)) {
     ));
     exit;
 }
-
-// Registra o clique (não é o voto final — só rastreamento)
-$ip       = clientIp();
-$ipSource = clientIpSource();
-$result   = registerVote($login, $topId, $ip);
 
 echo json_encode(array('ok' => $result === 'ok'));

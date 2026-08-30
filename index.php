@@ -64,24 +64,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if (empty($login) || empty($password)) {
             $error = 'Preencha o login e a senha.';
         } else {
-            // Rate limiting: max 5 tentativas por IP a cada 5 minutos
-            $rateKey = 'vs_login_rate_' . md5(clientIp());
-            $attempts = $_SESSION[$rateKey] ?? array();
+            // Rate limiting: arquivo em /tmp por IP (resiste a limpeza de cookies)
+            $rateFile = sys_get_temp_dir() . '/vs_login_' . md5(clientIp());
             $now = time();
-            $attempts = array_values(array_filter($attempts, function($t) use ($now) { return $t > ($now - 300); }));
+            $attempts = array();
+            if (file_exists($rateFile)) {
+                $raw = @json_decode(@file_get_contents($rateFile), true);
+                if (is_array($raw)) {
+                    $attempts = array_values(array_filter($raw, function($t) use ($now) { return $t > ($now - 300); }));
+                }
+            }
             if (count($attempts) >= 5) {
                 $error = 'Muitas tentativas de login. Tente novamente em alguns minutos.';
             } else {
                 try {
                     $user = gameLogin($login, $password);
                     if ($user) {
-                        unset($_SESSION[$rateKey]);
+                        @unlink($rateFile);
                         sessionLogin($user);
                         header('Location: vote.php');
                         exit;
                     }
                     $attempts[] = $now;
-                    $_SESSION[$rateKey] = $attempts;
+                    @file_put_contents($rateFile, json_encode($attempts), LOCK_EX);
                     $error = 'Login ou senha incorretos.';
                 } catch (Throwable $e) {
                     error_log('[VoteSystem] login error: ' . $e->getMessage());
@@ -112,8 +117,8 @@ $footer     = defined('LAYOUT_FOOTER')       ? LAYOUT_FOOTER       : 'VoteSystem
   <link rel="icon" type="<?= $mime ?>" href="<?= htmlspecialchars($favicon) ?>">
   <?php endif; ?>
   <link rel="stylesheet" href="assets/css/main.css">
-  <?php if (trim($extraCss)): ?><style><?= $extraCss ?></style><?php endif; ?>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/localforage/1.10.0/localforage.min.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+  <?php if (trim($extraCss)): ?><style><?= str_ireplace('</style', '', $extraCss) ?></style><?php endif; ?>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/localforage/1.10.0/localforage.min.js" crossorigin="anonymous" referrerpolicy="no-referrer" integrity="sha384-MTDrIlFOzEqpmOxY6UIA/1Zkh0a64UlmJ6R0UrZXqXCPx99siPGi8EmtQjIeCcTH"></script>
   <script src="assets/js/i18n.js"></script>
   <style>
     .rune-bg { position:fixed;inset:0;pointer-events:none;z-index:0;overflow:hidden; }

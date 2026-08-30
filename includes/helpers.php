@@ -26,6 +26,7 @@ function getTopKey($btn) {
         '4top.php'        => '4top',
         'l2toporg.php'    => 'l2toporg',
         'l2network.php'   => 'l2network',
+        'ragezone.php'    => 'ragezone',
     );
     return isset($map[$btn]) ? $map[$btn] : null;
 }
@@ -619,8 +620,12 @@ function claimReward($login, $objId, $hwid = null) {
              VALUES (?, ?, ?, FROM_UNIXTIME(?), 0)"
         );
         $ip = clientIp();
+        $chkLog = $db->prepare(
+            "SELECT id FROM 4top_log WHERE login = ? AND top_id = ? AND voted_at > DATE_SUB(NOW(), INTERVAL 12 HOUR) LIMIT 1 FOR UPDATE"
+        );
         foreach ($confirmed as $top_id => $voteTime) {
-            if (!hasVotedRecently($login, (int)$top_id)) {
+            $chkLog->execute(array($login, (int)$top_id));
+            if (!$chkLog->fetch()) {
                 $voteTs = (int)$voteTime > 0 ? (int)$voteTime : time();
                 $stmtLog->execute(array($login, $ip ?: 'N/A', (int)$top_id, $voteTs));
             }

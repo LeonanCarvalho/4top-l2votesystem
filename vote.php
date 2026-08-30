@@ -37,7 +37,8 @@ try {
                 echo json_encode(array('status' => 'error', 'msg' => '❌ Requisição inválida.'));
                 exit;
             }
-            $hwid = isset($_POST['hwid']) ? trim($_POST['hwid']) : '';
+            $hwid = isset($_POST['hwid']) ? substr(trim($_POST['hwid']), 0, 128) : '';
+            if ($hwid !== '' && !preg_match('/^[a-fA-F0-9\-]{16,128}$/', $hwid)) $hwid = '';
             echo json_encode(checkVotes($login, $ip, $hwid));
             exit;
         }
@@ -89,8 +90,9 @@ try {
                 if (!$apiResult->error && $apiResult->voted) {
                     $voteTime     = $apiResult->voteTime > 0 ? $apiResult->voteTime : 0;
                     $secs_ago_api = max(0, time() - $voteTime);
-                    if ($voteTime === 0 || $secs_ago_api < 43200) {
-                        $cooldown_left = ($voteTime === 0) ? 0 : 43200 - $secs_ago_api;
+                    $apiWindow    = ($top['top_btn'] === 'ragezone.php') ? 86400 : 43200;
+                    if ($voteTime === 0 || $secs_ago_api < $apiWindow) {
+                        $cooldown_left = ($voteTime === 0) ? 0 : $apiWindow - $secs_ago_api;
                         $can_vote      = false;
                     }
                 }
@@ -380,7 +382,14 @@ function showToast(msg, type) {
     el.style.border         = borders[type] || borders.info;
     el.style.color          = '#f0e8d8';
     el.style.backdropFilter = 'blur(10px)';
-    el.innerHTML = '<span style="font-size:1rem;flex-shrink:0">' + (icons[type]||'ℹ') + '</span><span>' + msg + '</span>';
+    el.textContent = '';
+    var icon = document.createElement('span');
+    icon.style.cssText = 'font-size:1rem;flex-shrink:0';
+    icon.textContent = icons[type] || 'ℹ';
+    var txt = document.createElement('span');
+    txt.textContent = msg;
+    el.appendChild(icon);
+    el.appendChild(txt);
     setTimeout(function() { el.style.transform = 'translateY(0)';     el.style.opacity = '1'; }, 10);
     setTimeout(function() { el.style.transform = 'translateY(100px)'; el.style.opacity = '0'; }, 3500);
 }

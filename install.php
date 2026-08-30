@@ -46,7 +46,7 @@ $project_info = array(
 $step  = isset($_SESSION['install_step']) ? (int)$_SESSION['install_step'] : 1;
 $error = '';
 
-if (file_exists(__DIR__ . '/config.php') && ($step < 3 || empty($_SESSION['install_token']))) {
+if (file_exists(__DIR__ . '/config.php')) {
     header('Location: index.php');
     exit;
 }
@@ -63,6 +63,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['action']) ? $_POST['
 
     if ($db_user === '' || $db_name === '') {
         $error = 'Usuario e nome do banco sao obrigatorios.';
+        $step  = 2;
+    } elseif (!preg_match('/^[a-zA-Z0-9.\-]+$/', $db_host)) {
+        $error = 'Host do banco inválido.';
         $step  = 2;
     } else {
         try {
@@ -91,7 +94,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['action']) ? $_POST['
             $cfg .= "define('VS_ANTICHEAT_IPAPI_TIMEOUT', 4);\n";
             $cfg .= "define('INSTALLED',    true);\n";
 
-            if (file_put_contents(__DIR__ . '/config.php', $cfg) === false) {
+            if (file_put_contents(__DIR__ . '/config.php', $cfg, LOCK_EX) === false) {
                 throw new RuntimeException('Nao foi possivel escrever config.php. Verifique as permissoes da pasta.');
             }
 
@@ -198,7 +201,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['action']) ? $_POST['
             $_SESSION['install_step'] = 4;
             $step = 4;
 
-            @unlink(__FILE__);
+            if (!@unlink(__FILE__)) {
+                error_log('[VoteSystem] Falha ao remover install.php automaticamente');
+            }
         } catch (PDOException $e) {
             error_log('[VoteSystem] install create tables: ' . $e->getMessage());
             $error = 'Erro ao criar tabelas. Verifique as permissoes do banco.';

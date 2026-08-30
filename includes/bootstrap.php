@@ -23,7 +23,11 @@ require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/core.php';
 require_once __DIR__ . '/auth.php';
 require_once __DIR__ . '/helpers.php';
-ensureVoteSchema();
+// ensureVoteSchema: roda no máximo 1x por hora por sessão
+if (empty($_SESSION['vs_schema_checked']) || $_SESSION['vs_schema_checked'] < time() - 3600) {
+    ensureVoteSchema();
+    $_SESSION['vs_schema_checked'] = time();
+}
 require_once __DIR__ . '/layout.php';
 
 // ── Layout helpers ────────────────────────────────────────────────────────────
@@ -49,7 +53,7 @@ function renderHead($pageTitle = '') {
         echo '<link rel="icon" type="' . $mime . '" href="' . htmlspecialchars($favicon) . '">';
     }
     echo '<link rel="stylesheet" href="assets/css/main.css">';
-    if (trim($extraCss)) echo '<style>' . $extraCss . '</style>';
+    if (trim($extraCss)) echo '<style>' . str_ireplace('</style', '', $extraCss) . '</style>';
     // i18n: localForage (IndexedDB/WebSQL/localStorage) + sistema de idiomas
     echo '<script src="https://cdnjs.cloudflare.com/ajax/libs/localforage/1.10.0/localforage.min.js" crossorigin="anonymous" referrerpolicy="no-referrer" integrity="sha384-MTDrIlFOzEqpmOxY6UIA/1Zkh0a64UlmJ6R0UrZXqXCPx99siPGi8EmtQjIeCcTH"></script>';
     echo '<script src="https://unpkg.com/@fingerprintjs/fingerprintjs@4/dist/fp.min.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>';

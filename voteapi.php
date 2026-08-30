@@ -67,6 +67,7 @@ function floodCheck($ip, $top) {
 // ── Input sanitization ────────────────────────────────────────────────────────
 function safeGet($key, $maxlen = 200) {
     $v = isset($_GET[$key]) ? trim($_GET[$key]) : '';
+    $v = preg_replace('/[\r\n]+/', ' ', $v);
     return substr(strip_tags($v), 0, $maxlen);
 }
 
@@ -78,7 +79,7 @@ function normalizeVoteIp($ip) {
         $ip = $m[1];
     }
 
-    $valid = filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4);
+    $valid = filter_var($ip, FILTER_VALIDATE_IP);
     return $valid ? $ip : '';
 }
 
@@ -119,9 +120,9 @@ if ($action === 'check' && empty($ip) && empty($login)) {
     exit;
 }
 
-// Anti-flood após validações básicas
-if ($action === 'check' && $ip) {
-    floodCheck($ip, $top);
+// Anti-flood para qualquer ação que use IP
+if ($ip) {
+    floodCheck($ip, $top . '_' . $action);
 }
 
 // ── Ação inválida ─────────────────────────────────────────────────────────────
@@ -348,8 +349,15 @@ abstract class TopBase {
     }
 
     protected function log($msg) {
+        $msg = str_replace(array("\r", "\n"), ' ', substr((string)$msg, 0, 500));
         $line = date('[Y-m-d H:i:s]') . ' [' . ($this->name ?: get_class($this)) . "] $msg\n";
-        @file_put_contents(dirname(__FILE__) . '/vote_api.log', $line, FILE_APPEND | LOCK_EX);
+        // rotação simples: se >5MB, trunca
+        $logFile = dirname(__FILE__) . '/vote_api.log';
+        if (file_exists($logFile) && filesize($logFile) > 5242880) {
+            @file_put_contents($logFile, $line, LOCK_EX);
+        } else {
+            @file_put_contents($logFile, $line, FILE_APPEND | LOCK_EX);
+        }
     }
 }
 
@@ -425,11 +433,10 @@ class L2JBrasilTop extends TopBase {
     const VOTE_WINDOW      = 43200;
 
     public function checkVote($ip, $login = '') {
-        if (empty($this->serverId))          return TopResult::fail('L2JBrasil: Server ID não configurado');
-        if (empty($ip) || $ip === 'UNKNOWN') return TopResult::fail('L2JBrasil: IP obrigatório');
+        if (empty($this->serverId)) return TopResult::fail('L2JBrasil: Server ID não configurado');
+        if ((empty($ip) || $ip === 'UNKNOWN') && empty($login)) return TopResult::fail('L2JBrasil: IP ou login obrigatório');
 
-        // player_id = MD5 do login do char (preferencial) ou vazio (fallback com base no login)
-        // username  = slug do servidor
+        // Prioridade: login (player_id=md5) — CGNAT-safe. IP como secundário (log/auditoria)
         $identifier = !empty($login) ? md5($login) : '';
 
         $url = self::API_URL . '?' . http_build_query([
@@ -462,13 +469,11 @@ class L2JBrasilTop extends TopBase {
             }
         }
 
-        $this->log("voted=0 no match | ip=$ip login=$login");
+        $this->log("voted=0 | ip=$ip login=$login player_id_req=$identifier");
         return TopResult::notVoted('Não votou');
     }
 
     public function getVoteUrl($login = '') {
-        // Com login: player_id = MD5 do login do char (32 caracteres) — l2jbrasil associa voto ao char (CGNAT safe)
-        // Sem login: sem player_id (vazio)
         $playerId = !empty($login) ? md5($login) : '';
         return self::VOTE_URL . '?a=in&u=' . urlencode($this->serverId)
              . '&player_id=' . urlencode($playerId);
@@ -500,7 +505,7 @@ class L2TopOrgTop extends TopBase {
         $isVoted  = (bool)($res['is_voted']  ?? false);
         $voteTime = (int)($res['vote_time']   ?? 0);
 
-        $this->log("is_voted=$isVoted | voteTime=$voteTime | login=$login");
+        $this->log("is_voted=$isVoted | voteTime=$voteTime | login=$login | ip=$ip");
 
         // L2Top.org retorna Unix UTC diretamente
         return ($isVoted && $voteTime > 0)
@@ -531,6 +536,7 @@ class L2NetworkTop extends TopBase {
             'apiKey' => $this->token,
             'type'   => 2,
             'player' => $login,
+            'ip'     => $ip ?: 'UNKNOWN',
         ));
 
         $body = $this->httpPost($postData);
@@ -550,7 +556,7 @@ class L2NetworkTop extends TopBase {
             $voteTime = (int)$result['vote_time'];
         }
 
-        $this->log("login=$login | voteTime=$voteTime");
+        $this->log("login=$login | ip=$ip | voteTime=$voteTime");
 
         if ($voteTime > 0 && $this->isVoteValid($voteTime, self::VOTE_WINDOW)) {
             return TopResult::ok($voteTime, $data);
@@ -560,7 +566,7 @@ class L2NetworkTop extends TopBase {
     }
 
     public function getVoteUrl($login = '') {
-        return self::VOTE_URL . '?a=in&u=' . urlencode($this->serverId) 
+        return self::VOTE_URL . '?a=in&u=' . urlencode($this->serverId)
              . '&id=' . urlencode($login ?: $this->serverId);
     }
 
@@ -607,14 +613,13 @@ class RaGezoneTop extends TopBase {
     protected $name        = 'RaGEZONE';
     protected $apiTimezone = 'UTC';
     const API_BASE         = 'https://forum.ragezone.com/topsites';
-    const VOTE_WINDOW      = 2592000; // 30 dias (reset mensal no dia 1, UTC)
+    const VOTE_WINDOW      = 86400; // 24h (mesmo que ranking seja mensal, CD de voto é 24h)
 
     public function checkVote($ip, $login = '') {
         if (empty($this->token)) return TopResult::fail('RaGEZONE: Listing Key não configurada');
         if (empty($this->serverId)) return TopResult::fail('RaGEZONE: Listing ID não configurado');
         if (empty($login)) return TopResult::fail('RaGEZONE: Login obrigatório (ref)');
 
-        // vote-check?ref={login} + header RZ-Listing-Key
         $url = self::API_BASE . '/' . urlencode($this->serverId) . '/vote-check?ref=' . urlencode($login);
         $body = $this->httpGet($url, array(
             'RZ-Listing-Key: ' . $this->token,
@@ -627,22 +632,32 @@ class RaGezoneTop extends TopBase {
         if (!$data) return TopResult::fail('RaGEZONE: JSON inválido');
 
         $voted  = (bool)($data['voted'] ?? false);
-        $period = (string)($data['period'] ?? '');
-        $now    = gmdate('Y-m');
+        // RaGEZONE pode retornar voted_at / time (Unix) ou period (Y-m)
+        $voteTime = 0;
+        if (isset($data['time']) && is_numeric($data['time'])) {
+            $voteTime = (int)$data['time'];
+        } elseif (isset($data['voted_at']) && is_numeric($data['voted_at'])) {
+            $voteTime = (int)$data['voted_at'];
+        } elseif (isset($data['data']['time']) && is_numeric($data['data']['time'])) {
+            $voteTime = (int)$data['data']['time'];
+        }
+        // Fallback: se só tem period mensal, usa início do período como referência
+        $period = (string)($data['period'] ?? ($data['data']['period'] ?? ''));
+        if ($voteTime === 0 && $period !== '') {
+            $voteTime = strtotime($period . '-01 00:00:00 UTC') ?: time();
+        }
+        if ($voteTime === 0) $voteTime = time();
 
-        $this->log("voted=" . ($voted ? '1' : '0') . " | period=$period | current=$now | ref=$login");
+        $this->log("voted=" . ($voted ? '1' : '0') . " | voteTime=$voteTime | period=$period | ref=$login");
 
-        // Voto válido se votou no período atual (mensal)
-        if ($voted && $period === $now) {
-            // RaGEZONE não retorna timestamp do voto — usa time() como referência
-            // O período atual garante que é dentro da janela
-            return TopResult::ok(time(), array(
+        if ($voted && $this->isVoteValid($voteTime, self::VOTE_WINDOW)) {
+            return TopResult::ok($voteTime, array(
                 'period' => $period,
-                'votes'  => $data['votes'] ?? 0,
+                'votes'  => $data['votes'] ?? ($data['data']['votes'] ?? 0),
             ));
         }
 
-        return TopResult::notVoted('Não votou neste período');
+        return TopResult::notVoted('Não votou neste período (24h)');
     }
 
     public function getVoteUrl($login = '') {
