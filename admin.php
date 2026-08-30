@@ -32,6 +32,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             '4top.php'        => 'https://top.4teambr.com/index.php?a=in&u={SERVER_ID}',
             'l2toporg.php'    => 'https://l2top.org/server/{SERVER_ID}/',
             'l2network.php'   => 'https://l2network.eu/index.php?a=in&u={SERVER_ID}',
+            'ragezone.php'    => 'https://forum.ragezone.com/topsites/{SERVER_ID}/vote',
         );
 
         if (empty($name) || empty($top_id) || empty($top_btn)) {

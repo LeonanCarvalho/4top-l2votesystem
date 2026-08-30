@@ -340,6 +340,7 @@ function getAvailableTops() {
         'l2jbrasil.php'   => array('name' => 'L2JBrasil ★', 'site' => 'top.l2jbrasil.com', 'token' => true,  'featured' => true,  'register_url' => 'https://top.l2jbrasil.com/index.php?a=add'),
         'l2toporg.php'    => array('name' => 'L2Top.org ★', 'site' => 'l2top.org',         'token' => true,  'featured' => true,  'register_url' => 'https://l2top.org/add-server/'),
         'l2network.php'   => array('name' => 'L2Network',   'site' => 'l2network.eu',      'token' => true,  'featured' => false, 'register_url' => 'https://l2network.eu/add-server'),
+        'ragezone.php'    => array('name' => 'RaGEZONE',    'site' => 'forum.ragezone.com', 'token' => true,  'featured' => false, 'register_url' => 'https://forum.ragezone.com/topsites/add'),
     );
 }
 

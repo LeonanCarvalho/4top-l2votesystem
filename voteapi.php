@@ -101,10 +101,11 @@ if ($action === 'list_tops') {
     echo json_encode(array(
         'error' => false,
         'tops'  => array(
-            '4top.php'      => array('name' => '4TOP',      'site' => 'top.4teambr.com', 'token' => false),
+            '4top.php'      => array('name' => '4TOP',      'site' => 'top.4teambr.com',   'token' => false),
             'l2jbrasil.php' => array('name' => 'L2JBrasil', 'site' => 'top.l2jbrasil.com', 'token' => true),
-            'l2toporg.php'  => array('name' => 'L2Top.org', 'site' => 'l2top.org',       'token' => true),
-            'l2network.php' => array('name' => 'L2Network', 'site' => 'l2network.eu',    'token' => true),
+            'l2toporg.php'  => array('name' => 'L2Top.org', 'site' => 'l2top.org',         'token' => true),
+            'l2network.php' => array('name' => 'L2Network', 'site' => 'l2network.eu',      'token' => true),
+            'ragezone.php'  => array('name' => 'RaGEZONE',  'site' => 'forum.ragezone.com', 'token' => true),
         ),
     ));
     exit;
@@ -165,6 +166,7 @@ static $map = array(
         '4top'        => 'FourTopTop',
         'l2toporg'    => 'L2TopOrgTop',
         'l2network'   => 'L2NetworkTop',
+        'ragezone'    => 'RaGezoneTop',
     );
     $class = isset($map[$top]) ? $map[$top] : null;
     if ($class === null || !class_exists($class)) return null;
@@ -594,5 +596,61 @@ class L2NetworkTop extends TopBase {
         curl_close($ch);
 
         return $err ? false : $body;
+    }
+}
+
+
+// =============================================================================
+// RaGEZONE Top Sites — voto mensal identificado por login (ref)
+// =============================================================================
+class RaGezoneTop extends TopBase {
+    protected $name        = 'RaGEZONE';
+    protected $apiTimezone = 'UTC';
+    const API_BASE         = 'https://forum.ragezone.com/topsites';
+    const VOTE_WINDOW      = 2592000; // 30 dias (reset mensal no dia 1, UTC)
+
+    public function checkVote($ip, $login = '') {
+        if (empty($this->token)) return TopResult::fail('RaGEZONE: Listing Key não configurada');
+        if (empty($this->serverId)) return TopResult::fail('RaGEZONE: Listing ID não configurado');
+        if (empty($login)) return TopResult::fail('RaGEZONE: Login obrigatório (ref)');
+
+        // vote-check?ref={login} + header RZ-Listing-Key
+        $url = self::API_BASE . '/' . urlencode($this->serverId) . '/vote-check?ref=' . urlencode($login);
+        $body = $this->httpGet($url, array(
+            'RZ-Listing-Key: ' . $this->token,
+            'Accept: application/json',
+        ));
+
+        if (!$body) return TopResult::fail('RaGEZONE API inacessível');
+
+        $data = $this->decodeJson($body);
+        if (!$data) return TopResult::fail('RaGEZONE: JSON inválido');
+
+        $voted  = (bool)($data['voted'] ?? false);
+        $period = (string)($data['period'] ?? '');
+        $now    = gmdate('Y-m');
+
+        $this->log("voted=" . ($voted ? '1' : '0') . " | period=$period | current=$now | ref=$login");
+
+        // Voto válido se votou no período atual (mensal)
+        if ($voted && $period === $now) {
+            // RaGEZONE não retorna timestamp do voto — usa time() como referência
+            // O período atual garante que é dentro da janela
+            return TopResult::ok(time(), array(
+                'period' => $period,
+                'votes'  => $data['votes'] ?? 0,
+            ));
+        }
+
+        return TopResult::notVoted('Não votou neste período');
+    }
+
+    public function getVoteUrl($login = '') {
+        // vote?ref={login} — o ref é o identificador do jogador
+        $url = self::API_BASE . '/' . urlencode($this->serverId) . '/vote';
+        if (!empty($login)) {
+            $url .= '?ref=' . urlencode($login);
+        }
+        return $url;
     }
 }
