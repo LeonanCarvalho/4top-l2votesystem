@@ -22,9 +22,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (!verifyCsrf($_POST['csrf_token'] ?? '')) {
         $error = 'Token de segurança inválido. Recarregue a página e tente novamente.';
     } elseif ($action === 'add_top') {
-        $name    = trim($_POST['top_name'] ?? '');
-        $top_id  = trim($_POST['top_id'] ?? '');
-        $token   = trim($_POST['top_token'] ?? '');
+        $name    = substr(trim($_POST['top_name'] ?? ''), 0, 100);
+        $top_id  = substr(trim($_POST['top_id'] ?? ''), 0, 200);
+        $token   = substr(trim($_POST['top_token'] ?? ''), 0, 500);
         $top_btn = basename(trim($_POST['top_btn'] ?? ''));
 
         $url_templates = array(
@@ -67,6 +67,46 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             );
             $stmt->execute(array($name, $top_id, $token ?: null, $url ?: null, $top_btn, $sort_order));
             $success = 'Top "' . $name . '" adicionado com sucesso!';
+            }
+        }
+    }
+
+    elseif ($action === 'edit_top') {
+        $id      = (int)($_POST['id'] ?? 0);
+        $name    = substr(trim($_POST['top_name'] ?? ''), 0, 100);
+        $top_id  = substr(trim($_POST['top_id'] ?? ''), 0, 200);
+        $token   = substr(trim($_POST['top_token'] ?? ''), 0, 500);
+
+        $url_templates = array(
+            'l2jbrasil.php'   => 'https://top.l2jbrasil.com/index.php?a=in&u={SERVER_ID}',
+            '4top.php'        => 'https://top.4teambr.com/index.php?a=in&u={SERVER_ID}',
+            'l2toporg.php'    => 'https://l2top.org/server/{SERVER_ID}/',
+            'l2network.php'   => 'https://l2network.eu/index.php?a=in&u={SERVER_ID}',
+            'ragezone.php'    => 'https://forum.ragezone.com/topsites/{SERVER_ID}/vote',
+        );
+
+        if ($id <= 0 || empty($name) || empty($top_id)) {
+            $error = 'Nome, ID do Servidor e top são obrigatórios.';
+        } elseif (!preg_match('/^[a-zA-Z0-9._\-]+$/', $top_id)) {
+            $error = 'ID do Servidor contém caracteres inválidos.';
+        } else {
+            $stmt = $db->prepare("SELECT top_btn, token FROM 4top_tops WHERE id = ? LIMIT 1");
+            $stmt->execute(array($id));
+            $current = $stmt->fetch(PDO::FETCH_ASSOC);
+
+            if (!$current || !isset($url_templates[$current['top_btn']])) {
+                $error = 'Top não encontrado ou inválido.';
+            } else {
+                $url = str_replace('{SERVER_ID}', rawurlencode($top_id), $url_templates[$current['top_btn']]);
+                $savedToken = ($token !== '') ? $token : ($current['token'] ?? null);
+
+                $stmt = $db->prepare(
+                    "UPDATE 4top_tops
+                     SET name = ?, top_id = ?, token = ?, url = ?
+                     WHERE id = ?"
+                );
+                $stmt->execute(array($name, $top_id, $savedToken ?: null, $url, $id));
+                $success = 'Top atualizado com sucesso!';
             }
         }
     }
@@ -297,68 +337,94 @@ renderNav();
       <?php if (empty($tops)): ?>
       <p style="font-size:.85rem;color:var(--text-dim)" data-i18n="admin_no_tops">Nenhum top cadastrado ainda.</p>
       <?php else: ?>
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th data-i18n="col_name">Nome</th>
-              <th data-i18n="col_id">ID</th>
-              <th data-i18n="col_status">Status</th>
-              <th style="text-align:right" data-i18n="col_actions">Ações</th>
-            </tr>
-          </thead>
-          <tbody>
-            <?php foreach ($tops as $top): ?>
-            <tr>
-              <td style="color:var(--text-primary)">
-                <div style="font-weight:500"><?= e($top['name']) ?></div>
-                <?php if (!empty($top['top_btn'])): ?>
-                <div style="font-size:.7rem;color:var(--gold-dim);margin-top:.15rem">
-                  📂 <?= e($top['top_btn']) ?>
+      <div class="top-admin-list">
+        <?php foreach ($tops as $top): ?>
+        <article class="top-admin-item">
+          <div class="top-admin-head">
+            <div class="top-admin-identity">
+              <strong><?= e($top['name']) ?></strong>
+              <span><?= e($top['top_btn'] ?: 'Top externo') ?></span>
+            </div>
+            <span class="badge <?= $top['enabled'] ? 'badge-success' : 'badge-danger' ?>"
+              data-i18n="<?= $top['enabled'] ? 'badge_active' : 'badge_inactive' ?>">
+              <?= $top['enabled'] ? 'Ativo' : 'Inativo' ?>
+            </span>
+          </div>
+
+          <div class="top-admin-details">
+            <div>
+              <span class="top-admin-label" data-i18n="col_id">ID</span>
+              <code><?= e($top['top_id']) ?></code>
+            </div>
+            <div>
+              <span class="top-admin-label">URL</span>
+              <span class="top-admin-url" title="<?= e($top['url'] ?? '') ?>"><?= e($top['url'] ?? '—') ?></span>
+            </div>
+          </div>
+
+          <div class="top-admin-actions">
+            <button class="btn btn-ghost btn-sm" type="button"
+              onclick="toggleTopEdit(<?= (int)$top['id'] ?>)"
+              title="Editar">✎ Editar</button>
+            <?php if (($top['top_btn'] ?? '') === '4top.php'): ?>
+            <button class="btn btn-ghost btn-sm" disabled
+              data-i18n-title="title_4top_no_disable"
+              title="O 4TOP não pode ser desativado"
+              style="opacity:.35;cursor:not-allowed">⏸</button>
+            <?php else: ?>
+            <form method="POST">
+              <input type="hidden" name="csrf_token" value="<?= csrfToken() ?>">
+              <input type="hidden" name="action" value="toggle_top">
+              <input type="hidden" name="id" value="<?= (int)$top['id'] ?>">
+              <button class="btn btn-ghost btn-sm" type="submit"
+                data-i18n-title="<?= $top['enabled'] ? 'title_disable' : 'title_enable' ?>"
+                title="<?= $top['enabled'] ? 'Desativar' : 'Ativar' ?>">
+                <?= $top['enabled'] ? '⏸' : '▶' ?>
+              </button>
+            </form>
+            <?php endif; ?>
+            <form method="POST"
+              onsubmit="return confirm(window.vsI18n ? window.vsI18n.t('confirm_remove_top') : 'Remover este top?')">
+              <input type="hidden" name="csrf_token" value="<?= csrfToken() ?>">
+              <input type="hidden" name="action" value="remove_top">
+              <input type="hidden" name="id" value="<?= (int)$top['id'] ?>">
+              <button class="btn btn-danger btn-sm" type="submit" title="Remover">🗑</button>
+            </form>
+          </div>
+
+          <div id="edit-top-<?= (int)$top['id'] ?>" class="top-admin-edit" style="display:none">
+            <form method="POST" action="admin.php" class="top-edit-form">
+              <input type="hidden" name="csrf_token" value="<?= csrfToken() ?>">
+              <input type="hidden" name="action" value="edit_top">
+              <input type="hidden" name="id" value="<?= (int)$top['id'] ?>">
+
+              <div class="top-edit-grid">
+                <div>
+                  <label class="form-label">Nome do Top</label>
+                  <input type="text" name="top_name" class="form-control"
+                    value="<?= e($top['name']) ?>" maxlength="100" required>
                 </div>
-                <?php elseif (!empty($top['url'])): ?>
-                <div style="font-size:.7rem;color:var(--text-dim);margin-top:.15rem"><?= e(substr($top['url'], 0, 40)) ?>…</div>
-                <?php endif; ?>
-              </td>
-              <td><code style="font-size:.78rem;color:var(--gold-dim)"><?= e($top['top_id']) ?></code></td>
-              <td>
-                <span class="badge <?= $top['enabled'] ? 'badge-success' : 'badge-danger' ?>"
-                  data-i18n="<?= $top['enabled'] ? 'badge_active' : 'badge_inactive' ?>">
-                  <?= $top['enabled'] ? 'Ativo' : 'Inativo' ?>
-                </span>
-              </td>
-              <td style="text-align:right">
-                <div style="display:flex;gap:.3rem;justify-content:flex-end">
-                  <?php if (($top['top_btn'] ?? '') === '4top.php'): ?>
-                  <button class="btn btn-ghost btn-sm" disabled
-                    data-i18n-title="title_4top_no_disable"
-                    title="O 4TOP não pode ser desativado"
-                    style="opacity:.35;cursor:not-allowed">⏸</button>
-                  <?php else: ?>
-                  <form method="POST" style="display:inline">
-                    <input type="hidden" name="csrf_token" value="<?= csrfToken() ?>">
-                    <input type="hidden" name="action" value="toggle_top">
-                    <input type="hidden" name="id" value="<?= (int)$top['id'] ?>">
-                    <button class="btn btn-ghost btn-sm" type="submit"
-                      data-i18n-title="<?= $top['enabled'] ? 'title_disable' : 'title_enable' ?>"
-                      title="<?= $top['enabled'] ? 'Desativar' : 'Ativar' ?>">
-                      <?= $top['enabled'] ? '⏸' : '▶' ?>
-                    </button>
-                  </form>
-                  <?php endif; ?>
-                  <form method="POST" style="display:inline"
-                    onsubmit="return confirm(window.vsI18n ? window.vsI18n.t('confirm_remove_top') : 'Remover este top?')">
-                    <input type="hidden" name="csrf_token" value="<?= csrfToken() ?>">
-                    <input type="hidden" name="action" value="remove_top">
-                    <input type="hidden" name="id" value="<?= (int)$top['id'] ?>">
-                    <button class="btn btn-danger btn-sm" type="submit" title="Remover">🗑</button>
-                  </form>
+                <div>
+                  <label class="form-label">ID do Servidor</label>
+                  <input type="text" name="top_id" class="form-control"
+                    value="<?= e($top['top_id']) ?>" maxlength="200" required>
                 </div>
-              </td>
-            </tr>
-            <?php endforeach; ?>
-          </tbody>
-        </table>
+                <div>
+                  <label class="form-label">Token / API Key</label>
+                  <input type="password" name="top_token" class="form-control"
+                    placeholder="Deixe vazio para manter o atual" autocomplete="new-password">
+                </div>
+              </div>
+
+              <div class="top-edit-actions">
+                <button type="button" class="btn btn-ghost btn-sm"
+                  onclick="toggleTopEdit(<?= (int)$top['id'] ?>)">Cancelar</button>
+                <button type="submit" class="btn btn-primary btn-sm">✓ Salvar alterações</button>
+              </div>
+            </form>
+          </div>
+        </article>
+        <?php endforeach; ?>
       </div>
       <?php endif; ?>
     </div>
@@ -602,6 +668,12 @@ function removeRewardRow(btn) {
 }
 
 var _topNames = [];
+
+function toggleTopEdit(id) {
+    var row = document.getElementById('edit-top-' + id);
+    if (!row) return;
+    row.style.display = row.style.display === 'none' ? '' : 'none';
+}
 
 function onTopChange(sel) {
     var opt        = sel.options[sel.selectedIndex];

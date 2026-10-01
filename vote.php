@@ -100,10 +100,13 @@ try {
         }
 
         if ($can_vote) {
-            $dbVote = getLastVote($login, $top['id']);
+            $dbVote = getLastVote($login, $top['id'], $ip);
             if ($dbVote && (int)$dbVote['seconds_ago'] < 43200) {
                 $cooldown_left = 43200 - (int)$dbVote['seconds_ago'];
                 $can_vote      = false;
+                if ($dbVote['login'] !== $login) {
+                    $top['voted_by_other'] = $dbVote['login'];
+                }
             }
         }
 
@@ -225,7 +228,7 @@ foreach ($tops_status as $idx => $top):
           <div class="top-status <?= $top['can_vote'] ? 'ok' : 'pending' ?>" style="justify-content:center"
                id="topStatus_<?= $top['id'] ?>"
                data-i18n="<?= $top['can_vote'] ? 'top_available_status' : 'top_cooldown_status' ?>">
-            <?= $top['can_vote'] ? '● Disponível' : '⏳ Em cooldown' ?>
+            <?= $top['can_vote'] ? '● Disponível' : (!empty($top['voted_by_other']) ? '⏳ IP em Cooldown' : '⏳ Em cooldown') ?>
           </div>
         </div>
 

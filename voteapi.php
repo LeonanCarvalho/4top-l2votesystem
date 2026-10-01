@@ -102,7 +102,7 @@ if ($action === 'list_tops') {
     echo json_encode(array(
         'error' => false,
         'tops'  => array(
-            '4top.php'      => array('name' => '4TOP',      'site' => 'top.4teambr.com',   'token' => false),
+            '4top.php'      => array('name' => '4TOP',      'site' => 'top.4teambr.com',   'token' => true),
             'l2jbrasil.php' => array('name' => 'L2JBrasil', 'site' => 'top.l2jbrasil.com', 'token' => true),
             'l2toporg.php'  => array('name' => 'L2Top.org', 'site' => 'l2top.org',         'token' => true),
             'l2network.php' => array('name' => 'L2Network', 'site' => 'l2network.eu',      'token' => true),
@@ -270,7 +270,7 @@ abstract class TopBase {
     // ── HTTP helpers ──────────────────────────────────────────────────────────
     protected function httpGetSimple($url) {
         return $this->_curl($url, array(
-            CURLOPT_HTTPHEADER => array(),
+            'headers' => array(),
         ));
     }
 
@@ -282,17 +282,19 @@ abstract class TopBase {
                 'Connection: keep-alive',
             );
         }
-        return $this->_curl($url, array(CURLOPT_HTTPHEADER => $headers));
+        return $this->_curl($url, array('headers' => $headers));
     }
 
     private function _curl($url, $extra = array()) {
         $userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
         if (!function_exists('curl_init')) {
+            $headers = isset($extra['headers']) ? $extra['headers'] : array();
+            $headers[] = 'User-Agent: ' . $userAgent;
             $ctx  = stream_context_create(array(
                 'http' => array(
                     'timeout' => $this->timeout,
                     'ignore_errors' => true,
-                    'header' => "User-Agent: " . $userAgent . "\r\n"
+                    'header' => implode("\r\n", $headers) . "\r\n"
                 ),
                 'ssl'  => array('verify_peer' => true, 'verify_peer_name' => true),
             ));
@@ -300,6 +302,8 @@ abstract class TopBase {
             return $body !== false ? $body : false;
         }
 
+        $extra[CURLOPT_HTTPHEADER] = isset($extra['headers']) ? $extra['headers'] : array();
+        unset($extra['headers']);
         $ch = curl_init();
         curl_setopt_array($ch, array(
             CURLOPT_URL            => $url,
@@ -322,12 +326,13 @@ abstract class TopBase {
         curl_close($ch);
 
         if ($err || $body === false) {
-            $this->log("curl error: $err | url: $url");
+            $this->log("curl error: $err | HTTP $code | url: $url");
             return false;
         }
 
         if ($code !== 200 || stripos($body, '<!DOCTYPE') !== false || stripos($body, '<html') !== false) {
-            $this->log("resposta inválida HTTP $code | url: $url");
+            $snippet = substr(trim(strip_tags((string)$body)), 0, 150);
+            $this->log("resposta inválida HTTP $code | url: $url | body: " . ($snippet ?: 'HTML/vazio'));
             return false;
         }
 
@@ -349,7 +354,7 @@ abstract class TopBase {
     }
 
     protected function log($msg) {
-        $msg = str_replace(array("\r", "\n"), ' ', substr((string)$msg, 0, 500));
+        $msg = str_replace(array("\r", "\n"), ' ', substr((string)$msg, 0, 1000));
         $line = date('[Y-m-d H:i:s]') . ' [' . ($this->name ?: get_class($this)) . "] $msg\n";
         // rotação simples: se >5MB, trunca
         $logFile = dirname(__FILE__) . '/vote_api.log';
@@ -373,6 +378,8 @@ class FourTopTop extends TopBase {
 
     public function checkVote($ip, $login = '') {
         if (empty($this->serverId))                        return TopResult::fail('4TOP: Server ID não configurado');
+        if (trim($this->token) === '') return TopResult::fail('4TOP: API Key não configurada');
+        if (preg_match('/[\r\n]/', $this->token)) return TopResult::fail('4TOP: API Key inválida');
         if ((empty($ip) || $ip === 'UNKNOWN') && empty($login)) return TopResult::fail('4TOP: IP ou login obrigatório');
 
         return $this->checkApi($ip, $login);
@@ -382,32 +389,46 @@ class FourTopTop extends TopBase {
         $url  = self::API_URL . '?name=' . urlencode($this->serverId) . '&ip=' . urlencode($ip);
         if (!empty($login)) $url .= '&login=' . urlencode($login);
         $body = $this->safeGet($url);
-        if (!$body) return TopResult::fail('4TOP API inacessível');
+        if (!$body) {
+            $this->log("ERRO: 4TOP API inacessível | url: $url");
+            return TopResult::fail('4TOP API inacessível');
+        }
 
         $data = $this->decodeJson($body);
-        if (!$data) return TopResult::fail('4TOP: JSON inválido');
+        if (!$data) {
+            $this->log("ERRO: 4TOP JSON inválido | body: $body");
+            return TopResult::fail('4TOP: JSON inválido');
+        }
 
         $voted   = (int)($data['voted']     ?? 0);
         $dateStr = $data['vote_date']        ?? null;
-
-        // Converte usando o fuso da API (UTC) → Unix UTC
         $voteTs  = $this->parseDateToUtc($dateStr);
-
-        $this->log("voted=$voted | voteTs=$voteTs | vote_date=$dateStr | ip=$ip | login=$login | now=" . time());
+        $now     = time();
+        $rawJson = json_encode($data);
 
         if ($voted === 1 && $this->isVoteValid($voteTs, self::VOTE_WINDOW)) {
+            $this->log("VOTO CONFIRMADO | login=$login ip=$ip | vote_date=$dateStr (ts=$voteTs) | raw: $rawJson");
             return TopResult::ok($voteTs, array(
                 'votes'     => $data['votes']     ?? 0,
                 'vote_date' => $dateStr,
             ));
         }
 
+        if ($voted === 1) {
+            $this->log("VOTO RECUSADO (EXPIRADO) | login=$login ip=$ip | vote_date=$dateStr (ts=$voteTs) passou de 12h | raw: $rawJson");
+            return TopResult::notVoted('Voto expirado (mais de 12h)');
+        }
+
+        $this->log("VOTO NÃO ENCONTRADO | login=$login ip=$ip | 4TOP retornou voted=0 (o voto não foi registrado ou captcha pendente) | raw: $rawJson");
         return TopResult::notVoted('Não votou');
     }
 
     private function safeGet($url, $tries = 3) {
         for ($i = 0; $i < $tries; $i++) {
-            $body = $this->httpGet($url);
+            $body = $this->httpGet($url, array(
+                'Accept: application/json',
+                'Authorization: Bearer ' . trim($this->token),
+            ));
             if ($body !== false && trim($body) !== '') return $body;
             if ($i < $tries - 1) usleep(200000);
         }
@@ -423,12 +444,12 @@ class FourTopTop extends TopBase {
 
 
 // =============================================================================
-// L2JBrasil — via CF Worker (evita bloqueio por datacenter IP)
+// L2JBrasil — consulta direta pela hospedagem do VoteSystem
 // =============================================================================
 class L2JBrasilTop extends TopBase {
     protected $name        = 'L2JBrasil';
     protected $apiTimezone = 'America/Sao_Paulo';
-    const API_URL          = 'https://4topvotesystem.4teambrsg.workers.dev/';
+    const API_URL          = 'https://top.l2jbrasil.com/votesystem/';
     const VOTE_URL         = 'https://top.l2jbrasil.com/index.php';
     const VOTE_WINDOW      = 43200;
 
@@ -447,29 +468,69 @@ class L2JBrasilTop extends TopBase {
         ]);
 
         $body = $this->httpGetSimple($url);
-        if (!$body) return TopResult::fail('L2JBrasil inacessível');
+        if (!$body) {
+            $this->log("ERRO: L2JBrasil inacessível | url: $url");
+            return TopResult::fail('L2JBrasil inacessível');
+        }
 
         $data = $this->decodeJson($body);
-        if ($data === null || !isset($data['vote'])) return TopResult::fail('L2JBrasil: resposta inválida');
+        if ($data === null || !isset($data['vote'])) {
+            $this->log("ERRO: L2JBrasil resposta inválida | body: $body");
+            return TopResult::fail('L2JBrasil: resposta inválida');
+        }
 
+        $rawJson = json_encode($data);
         // Normaliza — pode vir objeto único ou array
         $votes = isset($data['vote'][0]) ? $data['vote'] : [$data['vote']];
 
         foreach ($votes as $vote) {
-            $status = (string)($vote['status']          ?? '0');
-            $hours  = (float)($vote['hours_since_vote'] ?? 99);
-            $date   = $vote['date']                     ?? '0';
-            $voteTs = $this->parseDateToUtc($date);
-            $playerId = $vote['player_id'] ?? 'N/A';
-
-            $this->log("status=$status | hours=$hours | player_id=$playerId | ip=$ip | login=$login");
+            $status   = (string)($vote['status']          ?? '0');
+            $hours    = (float)($vote['hours_since_vote'] ?? 99);
+            $date     = $vote['date']                     ?? '0';
+            $voteTs   = $this->parseDateToUtc($date);
+            $playerId = (string)($vote['player_id']       ?? 'none');
 
             if ($status === '1' && $hours >= 0 && $hours < 12) {
+                $this->log("VOTO CONFIRMADO (POR LOGIN/PLAYER_ID) | login=$login ip=$ip player_id=$playerId | horas_desde_voto=$hours | raw: $rawJson");
                 return TopResult::ok($voteTs ?: time(), $vote);
+            }
+
+            if ($status === '1' && $hours >= 12) {
+                $this->log("VOTO RECUSADO (EXPIRADO) | login=$login ip=$ip player_id=$playerId | voto feito há {$hours}h (limite 12h) | raw: $rawJson");
+                return TopResult::notVoted('Voto expirado (mais de 12h)');
             }
         }
 
-        $this->log("voted=0 | ip=$ip login=$login player_id_req=$identifier");
+        // Se não confirmou por player_id e temos IP válido, tenta checagem secundária por IP
+        if (!empty($ip) && $ip !== 'UNKNOWN') {
+            $urlIp = self::API_URL . '?' . http_build_query([
+                'ip'        => $ip,
+                'username'  => $this->serverId,
+                'type'      => 'json',
+                'hours'     => '12',
+            ]);
+            $bodyIp = $this->httpGetSimple($urlIp);
+            if ($bodyIp) {
+                $dataIp = $this->decodeJson($bodyIp);
+                if ($dataIp && isset($dataIp['vote'])) {
+                    $rawJsonIp = json_encode($dataIp);
+                    $votesIp = isset($dataIp['vote'][0]) ? $dataIp['vote'] : [$dataIp['vote']];
+                    foreach ($votesIp as $voteIp) {
+                        $statusIp = (string)($voteIp['status']          ?? '0');
+                        $hoursIp  = (float)($voteIp['hours_since_vote'] ?? 99);
+                        $dateIp   = $voteIp['date']                     ?? '0';
+                        $voteTsIp = $this->parseDateToUtc($dateIp);
+
+                        if ($statusIp === '1' && $hoursIp >= 0 && $hoursIp < 12) {
+                            $this->log("VOTO CONFIRMADO (POR IP) | login=$login ip=$ip | horas_desde_voto=$hoursIp | raw: $rawJsonIp");
+                            return TopResult::ok($voteTsIp ?: time(), $voteIp);
+                        }
+                    }
+                }
+            }
+        }
+
+        $this->log("VOTO NÃO ENCONTRADO | login=$login ip=$ip player_id_req=$identifier | L2JBrasil retornou status=0/hours=-1 (voto não concluído na página do top ou captcha não resolvido) | raw: $rawJson");
         return TopResult::notVoted('Não votou');
     }
 
@@ -496,21 +557,29 @@ class L2TopOrgTop extends TopBase {
 
         $url  = self::API_URL . '/' . urlencode($this->token) . '/name/' . urlencode($login) . '/';
         $body = $this->httpGet($url);
-        if (!$body) return TopResult::fail('L2Top.org API inacessível');
+        if (!$body) {
+            $this->log("ERRO: L2Top.org API inacessível | url: $url");
+            return TopResult::fail('L2Top.org API inacessível');
+        }
 
         $data = $this->decodeJson($body);
-        if (!$data || !isset($data['result'])) return TopResult::fail('L2Top.org: resposta inválida');
+        if (!$data || !isset($data['result'])) {
+            $this->log("ERRO: L2Top.org resposta inválida | body: $body");
+            return TopResult::fail('L2Top.org: resposta inválida');
+        }
 
         $res      = $data['result'];
         $isVoted  = (bool)($res['is_voted']  ?? false);
         $voteTime = (int)($res['vote_time']   ?? 0);
+        $rawJson  = json_encode($data);
 
-        $this->log("is_voted=$isVoted | voteTime=$voteTime | login=$login | ip=$ip");
+        if ($isVoted && $voteTime > 0) {
+            $this->log("VOTO CONFIRMADO | login=$login ip=$ip | voteTime=$voteTime | raw: $rawJson");
+            return TopResult::ok($voteTime);
+        }
 
-        // L2Top.org retorna Unix UTC diretamente
-        return ($isVoted && $voteTime > 0)
-            ? TopResult::ok($voteTime)
-            : TopResult::notVoted('Não votou');
+        $this->log("VOTO NÃO ENCONTRADO | login=$login ip=$ip | L2Top.org retornou is_voted=false | raw: $rawJson");
+        return TopResult::notVoted('Não votou');
     }
 
     public function getVoteUrl($login = '') {
@@ -540,13 +609,20 @@ class L2NetworkTop extends TopBase {
         ));
 
         $body = $this->httpPost($postData);
-        if (!$body) return TopResult::fail('L2Network API inacessível');
+        if (!$body) {
+            $this->log("ERRO: L2Network API inacessível");
+            return TopResult::fail('L2Network API inacessível');
+        }
 
         $data = $this->decodeJson($body);
-        if (!$data) return TopResult::fail('L2Network: resposta inválida');
+        if (!$data) {
+            $this->log("ERRO: L2Network resposta inválida | body: $body");
+            return TopResult::fail('L2Network: resposta inválida');
+        }
 
         // Resposta pode vir com "result" ou direto
         $result = $data['result'] ?? $data;
+        $rawJson = json_encode($data);
 
         // Se retornou Unix timestamp > 0 = votou
         $voteTime = 0;
@@ -556,12 +632,17 @@ class L2NetworkTop extends TopBase {
             $voteTime = (int)$result['vote_time'];
         }
 
-        $this->log("login=$login | ip=$ip | voteTime=$voteTime");
-
         if ($voteTime > 0 && $this->isVoteValid($voteTime, self::VOTE_WINDOW)) {
+            $this->log("VOTO CONFIRMADO | login=$login ip=$ip | voteTime=$voteTime | raw: $rawJson");
             return TopResult::ok($voteTime, $data);
         }
 
+        if ($voteTime > 0) {
+            $this->log("VOTO RECUSADO (EXPIRADO) | login=$login ip=$ip | voteTime=$voteTime passou de 12h | raw: $rawJson");
+            return TopResult::notVoted('Voto expirado (mais de 12h)');
+        }
+
+        $this->log("VOTO NÃO ENCONTRADO | login=$login ip=$ip | L2Network não confirmou o voto | raw: $rawJson");
         return TopResult::notVoted('Não votou');
     }
 
@@ -626,10 +707,16 @@ class RaGezoneTop extends TopBase {
             'Accept: application/json',
         ));
 
-        if (!$body) return TopResult::fail('RaGEZONE API inacessível');
+        if (!$body) {
+            $this->log("ERRO: RaGEZONE API inacessível | url: $url");
+            return TopResult::fail('RaGEZONE API inacessível');
+        }
 
         $data = $this->decodeJson($body);
-        if (!$data) return TopResult::fail('RaGEZONE: JSON inválido');
+        if (!$data) {
+            $this->log("ERRO: RaGEZONE JSON inválido | body: $body");
+            return TopResult::fail('RaGEZONE: JSON inválido');
+        }
 
         $voted  = (bool)($data['voted'] ?? false);
         // RaGEZONE pode retornar voted_at / time (Unix) ou period (Y-m)
@@ -648,15 +735,22 @@ class RaGezoneTop extends TopBase {
         }
         if ($voteTime === 0) $voteTime = time();
 
-        $this->log("voted=" . ($voted ? '1' : '0') . " | voteTime=$voteTime | period=$period | ref=$login");
+        $rawJson = json_encode($data);
 
         if ($voted && $this->isVoteValid($voteTime, self::VOTE_WINDOW)) {
+            $this->log("VOTO CONFIRMADO | login=$login ip=$ip | voteTime=$voteTime | period=$period | raw: $rawJson");
             return TopResult::ok($voteTime, array(
                 'period' => $period,
                 'votes'  => $data['votes'] ?? ($data['data']['votes'] ?? 0),
             ));
         }
 
+        if ($voted) {
+            $this->log("VOTO RECUSADO (EXPIRADO) | login=$login ip=$ip | voteTime=$voteTime | period=$period passou de 24h | raw: $rawJson");
+            return TopResult::notVoted('Voto expirado (mais de 24h)');
+        }
+
+        $this->log("VOTO NÃO ENCONTRADO | login=$login ip=$ip | RaGEZONE retornou voted=false | raw: $rawJson");
         return TopResult::notVoted('Não votou neste período (24h)');
     }
 

@@ -169,9 +169,36 @@ class RemoteTopApi {
 
 /**
  * Retorna a URL de voto do player para o top.
- * Tenta getVoteUrl() da API primeiro; fallback para URL do banco.
+ * Monta a URL direta garantindo parâmetros de identificação (login / player_id MD5).
  */
 function getTopVoteUrl($top, $login = '') {
+    $btn      = !empty($top['top_btn']) ? basename($top['top_btn']) : '';
+    $serverId = (string)(isset($top['top_id']) ? $top['top_id'] : '');
+    $login    = trim((string)$login);
+
+    switch ($btn) {
+        case '4top.php':
+            $url = 'https://top.4teambr.com/index.php?a=in&u=' . urlencode($serverId);
+            if ($login !== '') $url .= '&login=' . urlencode($login);
+            return $url;
+
+        case 'l2jbrasil.php':
+            $playerId = ($login !== '') ? md5($login) : '';
+            return 'https://top.l2jbrasil.com/index.php?a=in&u=' . urlencode($serverId) . '&player_id=' . urlencode($playerId);
+
+        case 'l2toporg.php':
+            return 'https://l2top.org/server/' . urlencode($serverId) . '/vote/' . ($login !== '' ? urlencode($login) . '/' : '');
+
+        case 'l2network.php':
+            return 'https://l2network.eu/index.php?a=in&u=' . urlencode($serverId) . '&id=' . urlencode($login ?: $serverId);
+
+        case 'ragezone.php':
+            $url = 'https://forum.ragezone.com/topsites/' . urlencode($serverId) . '/vote';
+            if ($login !== '') $url .= '?ref=' . urlencode($login);
+            return $url;
+    }
+
+    // Fallback genérico para outros tops
     $apiUrl = '#';
     if (!empty($top['top_btn'])) {
         $api = loadTopApi($top);
@@ -179,16 +206,8 @@ function getTopVoteUrl($top, $login = '') {
             $apiUrl = $api->getVoteUrl($login);
         }
     }
-    // Fallback para URL do banco se API falhar ou retornar '#'
     $dbUrl = isset($top['url']) ? trim($top['url']) : '';
-    $url = ($apiUrl && $apiUrl !== '#') ? $apiUrl : ($dbUrl ?: '#');
-
-    // Corrige parâmetro dos tops que usam &u= em vez de &s=
-    if (!empty($top['top_btn']) && in_array($top['top_btn'], array('4top.php', 'l2jbrasil.php'), true)) {
-        $url = preg_replace('/\ba=in&s=/i', 'a=in&u=', $url);
-    }
-
-    return $url;
+    return ($apiUrl && $apiUrl !== '#') ? $apiUrl : ($dbUrl ?: '#');
 }
 
 /**
@@ -337,7 +356,7 @@ function logAnticheatDetection(array $data) {
 
 function getAvailableTops() {
     return array(
-        '4top.php'        => array('name' => '4TOP ★',      'site' => 'top.4teambr.com',   'token' => false, 'featured' => true,  'register_url' => 'https://top.4teambr.com/addserver.php'),
+        '4top.php'        => array('name' => '4TOP ★',      'site' => 'top.4teambr.com',   'token' => true,  'featured' => true,  'register_url' => 'https://top.4teambr.com/addserver.php'),
         'l2jbrasil.php'   => array('name' => 'L2JBrasil ★', 'site' => 'top.l2jbrasil.com', 'token' => true,  'featured' => true,  'register_url' => 'https://top.l2jbrasil.com/index.php?a=add'),
         'l2toporg.php'    => array('name' => 'L2Top.org ★', 'site' => 'l2top.org',         'token' => true,  'featured' => true,  'register_url' => 'https://l2top.org/add-server/'),
         'l2network.php'   => array('name' => 'L2Network',   'site' => 'l2network.eu',      'token' => true,  'featured' => false, 'register_url' => 'https://l2network.eu/add-server'),
@@ -386,35 +405,60 @@ function getRewards() {
 // ── Cooldown e log de votos ───────────────────────────────────────────────────
 
 /**
- * Verifica se o jogador votou neste top nas últimas 12 horas.
+ * Verifica se o jogador (ou seu IP) votou neste top nas últimas 12 horas.
  */
-function hasVotedRecently($login, $top_id) {
-    $db   = getDB();
+function hasVotedRecently($login, $top_id, $ip = null) {
+    $db    = getDB();
     $login = trim((string)$login);
-    $stmt = $db->prepare(
-        "SELECT id FROM 4top_log
-         WHERE login = ? AND top_id = ?
-           AND voted_at > DATE_SUB(NOW(), INTERVAL 12 HOUR)
-         LIMIT 1"
-    );
-    $stmt->execute(array($login, $top_id));
+    $ip    = trim((string)$ip);
+
+    if (!empty($ip) && $ip !== 'UNKNOWN') {
+        $stmt = $db->prepare(
+            "SELECT id FROM 4top_log
+             WHERE (login = ? OR ip = ?) AND top_id = ?
+               AND voted_at > DATE_SUB(NOW(), INTERVAL 12 HOUR)
+             LIMIT 1"
+        );
+        $stmt->execute(array($login, $ip, $top_id));
+    } else {
+        $stmt = $db->prepare(
+            "SELECT id FROM 4top_log
+             WHERE login = ? AND top_id = ?
+               AND voted_at > DATE_SUB(NOW(), INTERVAL 12 HOUR)
+             LIMIT 1"
+        );
+        $stmt->execute(array($login, $top_id));
+    }
     return (bool)$stmt->fetch();
 }
 
 /**
- * Retorna o último voto do jogador neste top, com seconds_ago calculado.
+ * Retorna o último voto do jogador (ou de seu IP) neste top, com seconds_ago calculado.
  */
-function getLastVote($login, $top_id) {
-    $db   = getDB();
+function getLastVote($login, $top_id, $ip = null) {
+    $db    = getDB();
     $login = trim((string)$login);
-    $stmt = $db->prepare(
-        "SELECT *, TIMESTAMPDIFF(SECOND, voted_at, NOW()) AS seconds_ago
-         FROM 4top_log
-         WHERE login = ? AND top_id = ?
-         ORDER BY voted_at DESC
-         LIMIT 1"
-    );
-    $stmt->execute(array($login, $top_id));
+    $ip    = trim((string)$ip);
+
+    if (!empty($ip) && $ip !== 'UNKNOWN') {
+        $stmt = $db->prepare(
+            "SELECT *, TIMESTAMPDIFF(SECOND, voted_at, NOW()) AS seconds_ago
+             FROM 4top_log
+             WHERE (login = ? OR ip = ?) AND top_id = ?
+             ORDER BY voted_at DESC
+             LIMIT 1"
+        );
+        $stmt->execute(array($login, $ip, $top_id));
+    } else {
+        $stmt = $db->prepare(
+            "SELECT *, TIMESTAMPDIFF(SECOND, voted_at, NOW()) AS seconds_ago
+             FROM 4top_log
+             WHERE login = ? AND top_id = ?
+             ORDER BY voted_at DESC
+             LIMIT 1"
+        );
+        $stmt->execute(array($login, $top_id));
+    }
     return $stmt->fetch(PDO::FETCH_ASSOC);
 }
 
